@@ -2,6 +2,7 @@ package com.red_folder.phonegap.plugin.backgroundservice;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 import java.util.Timer;
@@ -10,9 +11,13 @@ import java.util.TimerTask;
 
 import org.json.JSONObject;
 
+import android.app.AlarmManager;
 import android.app.Service;
+import android.app.PendingIntent;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.os.AsyncTask;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.preference.PreferenceManager;
@@ -35,18 +40,16 @@ public abstract class BackgroundService extends Service {
 	 ************************************************************************************************
 	 */
 	private Boolean mServiceInitialised = false;
-	private Timer mTimer;
-	
+    private String mServiceName = null;
+
 	private final Object mResultLock = new Object();
 	private JSONObject mLatestResult = null;
 
 	private List<BackgroundServiceListener> mListeners = new ArrayList<BackgroundServiceListener>();
 	
-	private TimerTask mUpdateTask;
-	
 	private Date mPausedUntil = null;
 
-	public void setPauseDuration(long pauseDuration) {
+    public void setPauseDuration(long pauseDuration) {
 		this.mPausedUntil = new Date(new Date().getTime() + pauseDuration);
 		
 		// Call the onPause event
@@ -94,18 +97,6 @@ public abstract class BackgroundService extends Service {
 		}
 	}
 
-	public void restartTimer() {
-        
-        // Stop the timertask and restart for the new interval to take effect
-        if (this.mUpdateTask != null) {
-        	this.mUpdateTask.cancel();
-        	this.mUpdateTask = null;
-
-			this.mUpdateTask = getTimerTask(); 			
-			this.mTimer.schedule(this.mUpdateTask, getMilliseconds(), getMilliseconds());
-        }
-	}
-	
 	/*
 	 ************************************************************************************************
 	 * Overriden Methods 
@@ -122,42 +113,37 @@ public abstract class BackgroundService extends Service {
 	public void onCreate() {     
 		super.onCreate();     
 		Log.i(TAG, "Service creating");
-
-		// Duplicating the call to initialiseService across onCreate and onStart
-		// Done this to ensure that my initialisation code is called.
-		// Found that the onStart was not called if Android was re-starting the service if killed
-		initialiseService();
 	}
 
-	@Override
-	public void onStart(Intent intent, int startId) {
-		Log.i(TAG, "Service started");       
+    @Override
+	public int onStartCommand(Intent intent, int flags, int startId) {
+		Log.i(TAG, "Service started");
 
-		// Duplicating the call to initialiseService across onCreate and onStart
-		// Done this to ensure that my initialisation code is called.
-		// Found that the onStart was not called if Android was re-starting the service if killed
-		initialiseService();
-	}
+        if( intent == null )
+            return START_STICKY;
+
+        if( mServiceName == null ) {
+            mServiceName = intent.getAction();
+            Log.i(TAG, "Service Name: " + mServiceName);
+
+            initialiseService();
+        }
+
+        // Do not do work if not from alarm
+        if( ! intent.getBooleanExtra("DoWork", false) )
+            return START_STICKY;
+
+        new WorkTask().execute();
+        return START_STICKY;
+    }
 	
 	@Override  
 	public void onDestroy() {     
 		super.onDestroy();     
 		Log.i(TAG, "Service destroying");
 		
-		Log.i(TAG, "Stopping timer task");
-		stopTimerTask();
-
-		Log.i(TAG, "Removing the timer");
-		if (this.mTimer != null) {
-			Log.i(TAG, "Timer is not null");
-			try {
-				this.mTimer.cancel();     
-				Log.i(TAG, "Timer.cancel has been called");
-				this.mTimer = null;
-			} catch (Exception ex) {
-				Log.i(TAG, "Exception has occurred - " + ex.getMessage());
-			}
-		}
+		// Do not stop timer here
+        // Service can be stopped unexpectedly, we want AlarmReceiver to start it again
 	}
 
 	/*
@@ -168,7 +154,7 @@ public abstract class BackgroundService extends Service {
 	protected void runOnce() {
 		// Runs the doWork once
 		// Sets the last result & updates the listeners
-		doWorkWrapper();
+		new WorkTask().execute();
 	}
 
 	/*
@@ -310,17 +296,15 @@ public abstract class BackgroundService extends Service {
 	}
 
 	private void setupTimerTask () {
-		// Only create a timer if the timer is null
-		if (this.mTimer == null) {
-			this.mTimer = new Timer(this.getClass().getName());
-		}
-		
-		// Only create the updateTask if is null
-		if (this.mUpdateTask == null) {
-			this.mUpdateTask = getTimerTask(); 			
-			int milliseconds = getMilliseconds();
-			this.mTimer.schedule(this.mUpdateTask, 1000L, milliseconds);
-		}
+        AlarmManager alarmMgr = (AlarmManager)getSystemService(Context.ALARM_SERVICE);
+        Intent intent = new Intent(this, AlarmReceiver.class);
+        intent.putExtra("ServiceName", mServiceName);
+        Log.d(TAG, "Start Alarm, servicename: " + mServiceName);
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+        Calendar time = Calendar.getInstance();
+        time.setTimeInMillis(System.currentTimeMillis());
+        time.add(Calendar.MILLISECOND, getMilliseconds());
+        alarmMgr.setInexactRepeating(AlarmManager.RTC_WAKEUP, time.getTimeInMillis(), getMilliseconds(), pendingIntent);
 
 		onTimerEnabled();
 	}
@@ -328,17 +312,11 @@ public abstract class BackgroundService extends Service {
 	private void stopTimerTask() {
 		
 		Log.i(TAG, "stopTimerTask called");
-		if (this.mUpdateTask != null)
-		{
-			Log.i(TAG, "updateTask is not null");
-			if (this.mUpdateTask.cancel() )
-			{
-				Log.i(TAG, "updateTask.cancel returned true");
-			} else {
-				Log.i(TAG, "updateTask.cancel returned false");
-			}
-			this.mUpdateTask = null;
-		}
+
+        AlarmManager alarmMgr = (AlarmManager)getSystemService(Context.ALARM_SERVICE);
+        Intent intent = new Intent(this, AlarmReceiver.class);
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+        alarmMgr.cancel(pendingIntent);
 		
 		onTimerDisabled();
 	}
@@ -430,4 +408,12 @@ public abstract class BackgroundService extends Service {
 	
 	protected void onPauseComplete() {
 	}
+
+    protected class WorkTask extends AsyncTask<Void, Void, Void> {
+        @Override
+        protected Void doInBackground(Void... voids) {
+            doWorkWrapper();
+            return null;
+        }
+    }
 }

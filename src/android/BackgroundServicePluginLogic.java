@@ -355,7 +355,9 @@ public class BackgroundServicePluginLogic {
 			Log.d("ServiceDetails", "stopService called");
 
 			try {
-				
+                Log.d("ServiceDetails", "Disable Timer");
+                mApi.disableTimer();
+
 				Log.d("ServiceDetails", "Unbinding Service");
 				this.mContext.unbindService(serviceConnection);
 				
@@ -629,6 +631,8 @@ public class BackgroundServicePluginLogic {
 		private ServiceConnection serviceConnection = new ServiceConnection() {
 			@Override
 			public void onServiceConnected(ComponentName name, IBinder service) {
+                Log.i(LOCALTAG, "Service Connected");
+
 				// that's how we get the client side of the IPC connection
 				mApi = BackgroundServiceApi.Stub.asInterface(service);
 				try {
@@ -647,6 +651,10 @@ public class BackgroundServicePluginLogic {
 
 			@Override
 			public void onServiceDisconnected(ComponentName name) {
+                Log.i(LOCALTAG, "Service Disconnected");
+
+                mApi = null;
+
 				synchronized(mServiceConnectedLock) {
 					mServiceConnected = false;
 
