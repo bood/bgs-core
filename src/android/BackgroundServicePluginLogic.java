@@ -179,39 +179,37 @@ public class BackgroundServicePluginLogic {
 
 				Log.d(TAG, "Action = " + action);
 
+                synchronized(service.mServiceConnectedLock) {
+                    if (!service.isServiceRunning()) {
+                        service.bindToService();
+                    }
 
-				if (!service.isInitialised())
-					service.initialise();
+                    if (service.isServiceRunning()) {
+                        if (ACTION_GET_STATUS.equals(action)) result = service.getStatus();
 
-				if (ACTION_GET_STATUS.equals(action)) result = service.getStatus();
-				
-				if (ACTION_START_SERVICE.equals(action)) result = service.startService();
+                        if (ACTION_START_SERVICE.equals(action)) result = service.startService();
 
-				if (ACTION_REGISTER_FOR_BOOTSTART.equals(action)) result = service.registerForBootStart();
-				if (ACTION_DEREGISTER_FOR_BOOTSTART.equals(action)) result = service.deregisterForBootStart();
+                        if (ACTION_REGISTER_FOR_BOOTSTART.equals(action))
+                            result = service.registerForBootStart();
+                        if (ACTION_DEREGISTER_FOR_BOOTSTART.equals(action))
+                            result = service.deregisterForBootStart();
 
-				if (ACTION_REGISTER_FOR_UPDATES.equals(action)) result = service.registerForUpdates(listener, listenerExtras);
-				if (ACTION_DEREGISTER_FOR_UPDATES.equals(action)) result = service.deregisterForUpdates();
+                        if (ACTION_REGISTER_FOR_UPDATES.equals(action))
+                            result = service.registerForUpdates(listener, listenerExtras);
+                        if (ACTION_DEREGISTER_FOR_UPDATES.equals(action))
+                            result = service.deregisterForUpdates();
 
-				if (result == null) {
-					Log.d(TAG, "Check if the service is running?");
+                        if (ACTION_STOP_SERVICE.equals(action)) result = service.stopService();
 
-					if (service != null && service.isServiceRunning()) {
-						Log.d(TAG, "Service is running?");
-						
-						if (ACTION_STOP_SERVICE.equals(action)) result = service.stopService();
+                        if (ACTION_ENABLE_TIMER.equals(action)) result = service.enableTimer(data);
+                        if (ACTION_DISABLE_TIMER.equals(action)) result = service.disableTimer();
 
-						if (ACTION_ENABLE_TIMER.equals(action)) result = service.enableTimer(data);
-						if (ACTION_DISABLE_TIMER.equals(action)) result = service.disableTimer();
+                        if (ACTION_SET_CONFIGURATION.equals(action))
+                            result = service.setConfiguration(data);
 
-						if (ACTION_SET_CONFIGURATION.equals(action)) result = service.setConfiguration(data);
-
-						if (ACTION_RUN_ONCE.equals(action)) result = service.runOnce();
-
-					} else {
-						result = new ExecuteResult(ExecuteStatus.INVALID_ACTION);
-					}
-				}
+                        if (ACTION_RUN_ONCE.equals(action)) result = service.runOnce();
+                    }
+                }
 
 				if (result == null)
 					result = new ExecuteResult(ExecuteStatus.INVALID_ACTION);
@@ -284,12 +282,10 @@ public class BackgroundServicePluginLogic {
 
 		private String mUniqueID = java.util.UUID.randomUUID().toString();
 		
-		private boolean mInitialised = false;
-		
 		private Intent mService = null;
 		
 		private Object mServiceConnectedLock = new Object();
-		private Boolean mServiceConnected = null;
+		private Boolean mServiceConnected = false;
 
 		private IUpdateListener mListener = null;
 		private Object[] mListenerExtras = null;
@@ -310,20 +306,6 @@ public class BackgroundServicePluginLogic {
 		 * Public Methods 
 		 ************************************************************************************************
 		 */
-		public void initialise()
-		{
-			this.mInitialised = true;
-			
-			// If the service is running, then automatically bind to it
-			if (this.isServiceRunning()) {
-				startService();
-			}
-		}
-		
-		public boolean isInitialised()
-		{
-			return mInitialised;
-		}
 
 		public ExecuteResult startService()
 		{
@@ -594,7 +576,7 @@ public class BackgroundServicePluginLogic {
 		 * Private Methods 
 		 ************************************************************************************************
 		 */
-		private boolean bindToService() {
+		public boolean bindToService() {
 			boolean result = false;
 			
 			Log.d(LOCALTAG, "Starting bindToService");
@@ -603,25 +585,27 @@ public class BackgroundServicePluginLogic {
 				this.mService = new Intent(this.mServiceName);
 
 				Log.d(LOCALTAG, "Attempting to start service");
-				this.mContext.startService(this.mService);
+				ComponentName service_name = this.mContext.startService(this.mService);
+                if( service_name == null ) {
+                    Log.e(LOCALTAG, "Failed to start service");
+                    return false;
+                }
 
-				Log.d(LOCALTAG, "Attempting to bind to service");
-				if (this.mContext.bindService(this.mService, serviceConnection, 0)) {
-					Log.d(LOCALTAG, "Waiting for service connected lock");
-					synchronized(mServiceConnectedLock) {
-						while (mServiceConnected==null) {
-							try {
-								mServiceConnectedLock.wait();
-							} catch (InterruptedException e) {
-								Log.d(LOCALTAG, "Interrupt occurred while waiting for connection", e);
-							}
-						}
-						result = this.mServiceConnected;
-					}
-				}
-			} catch (Exception ex) {
-				Log.d(LOCALTAG, "bindToService failed", ex);
-			}
+                Log.d(LOCALTAG, "Attempting to bind to service");
+                if (this.mContext.bindService(this.mService, serviceConnection, 0)) {
+                    Log.d(LOCALTAG, "Waiting for service connected lock");
+                    while (!mServiceConnected) {
+                        try {
+                            mServiceConnectedLock.wait();
+                        } catch (InterruptedException e) {
+                            Log.d(LOCALTAG, "Interrupt occurred while waiting for connection", e);
+                        }
+                    }
+                    result = this.mServiceConnected;
+                }
+            } catch (Exception ex) {
+                Log.e(LOCALTAG, "bindToService failed", ex);
+            }
 
 			Log.d(LOCALTAG, "Finished bindToService");
 
@@ -632,16 +616,16 @@ public class BackgroundServicePluginLogic {
 			@Override
 			public void onServiceConnected(ComponentName name, IBinder service) {
                 Log.i(LOCALTAG, "Service Connected");
-
-				// that's how we get the client side of the IPC connection
-				mApi = BackgroundServiceApi.Stub.asInterface(service);
-				try {
-					mApi.addListener(serviceListener);
-				} catch (RemoteException e) {
-					Log.d(LOCALTAG, "addListener failed", e);
-				}
 				
 				synchronized(mServiceConnectedLock) {
+                    // that's how we get the client side of the IPC connection
+                    mApi = BackgroundServiceApi.Stub.asInterface(service);
+                    try {
+                        mApi.addListener(serviceListener);
+                    } catch (RemoteException e) {
+                        Log.d(LOCALTAG, "addListener failed", e);
+                    }
+
 					mServiceConnected = true;
 
 					mServiceConnectedLock.notify();
@@ -653,9 +637,9 @@ public class BackgroundServicePluginLogic {
 			public void onServiceDisconnected(ComponentName name) {
                 Log.i(LOCALTAG, "Service Disconnected");
 
-                mApi = null;
-
 				synchronized(mServiceConnectedLock) {
+                    mApi = null;
+
 					mServiceConnected = false;
 
 					mServiceConnectedLock.notify();
@@ -708,7 +692,7 @@ public class BackgroundServicePluginLogic {
 				Log.d(LOCALTAG, "Adding basic info to JSONObject failed", e);
 			}
 
-			if (this.mServiceConnected != null && this.mServiceConnected && this.isServiceRunning()) {
+			if (this.isServiceRunning()) {
 				try { result.put("ServiceRunning", true); } catch (Exception ex) {Log.d(LOCALTAG, "Adding ServiceRunning to JSONObject failed", ex);};
 				try { result.put("TimerEnabled", isTimerEnabled()); } catch (Exception ex) {Log.d(LOCALTAG, "Adding TimerEnabled to JSONObject failed", ex);};
 				try { result.put("Configuration", getConfiguration()); } catch (Exception ex) {Log.d(LOCALTAG, "Adding Configuration to JSONObject failed", ex);};
@@ -728,23 +712,9 @@ public class BackgroundServicePluginLogic {
 			return result;
 		}
 		
-		private boolean isServiceRunning()
+		public boolean isServiceRunning()
 		{
-			boolean result = false;
-			
-			try {
-				// Return Plugin with ServiceRunning true/ false
-				ActivityManager manager = (ActivityManager)this.mContext.getSystemService(Context.ACTIVITY_SERVICE); 
-				for (RunningServiceInfo service : manager.getRunningServices(Integer.MAX_VALUE)) { 
-					if (this.mServiceName.equals(service.service.getClassName())) { 
-						result = true; 
-					} 
-				} 
-			} catch (Exception ex) {
-				Log.d(LOCALTAG, "isServiceRunning failed", ex);
-			}
-
-		    return result;
+		    return mApi!=null;
 		}
 
 		private Boolean isTimerEnabled()
