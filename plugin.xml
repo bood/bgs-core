@@ -53,6 +53,7 @@
 		
         <source-file src="aidl/android/BackgroundServiceApi.aidl" target-dir="src/com/red_folder/phonegap/plugin/backgroundservice" />
         <source-file src="aidl/android/BackgroundServiceListener.aidl" target-dir="src/com/red_folder/phonegap/plugin/backgroundservice" />
+        <source-file src="src/android/AlarmReceiver.java" target-dir="src/com/red_folder/phonegap/plugin/backgroundservice" />
 		
     </platform>
 </plugin>
